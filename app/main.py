@@ -2,7 +2,20 @@ import os
 import functions_framework
 from google.cloud import storage, firestore
 from datetime import datetime
-from flask import request
+from flask import request, jsonify
+
+@functions_framework.http
+def handle_request(request):
+    """HTTP Cloud Function for container-based deployment.
+    Args:
+        request (flask.Request): The request object.
+    Returns:
+        A JSON response containing a status message.
+    """
+    return jsonify({
+        "message": "Hello from container function!",
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }), 200
 
 @functions_framework.http
 def upload_file(request):
@@ -32,7 +45,7 @@ def upload_file(request):
     blob.upload_from_file(file.stream, content_type=file.content_type)
 
     # Add metadata to Firestore
-    doc_ref = firestore_client.collection(collection_name).document()
+    doc_ref = firestore_client.collection(collection_name).document(file.filename)
     doc_ref.set({
         "filename": file.filename,
         "uploadedBy": uploaded_by,
