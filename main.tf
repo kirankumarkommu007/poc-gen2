@@ -123,28 +123,43 @@ resource "google_project_iam_member" "fn_firestore_access" {
   member  = "serviceAccount:${google_cloudfunctions2_function.upload_file_function.service_config[0].service_account_email}"
 }
 
-# ------------------------------------------------------------
-# 8️⃣  Artifact Registry Repository
-# ------------------------------------------------------------
-resource "google_artifact_registry_repository" "docker_repo" {
-  location      = var.region
-  repository_id = "cloud-functions"
-  description   = "Docker repository for Cloud Functions"
-  format        = "DOCKER"
+# ------------------------------------------
+# 1️⃣ Docker build and push (local)
+# ------------------------------------------
+resource "null_resource" "docker_build_push" {
+  triggers = {
+    # forces rebuild on every terraform apply
+    image_tag = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      echo "Building Docker image..."
+      docker build -t asia-south1-docker.pkg.dev/${var.project_id}/gcp-poc/upload-function:latest .
+
+      echo "Authenticating Docker with Artifact Registry..."
+      gcloud auth configure-docker asia-south1-docker.pkg.dev
+
+      echo "Pushing Docker image..."
+      docker push asia-south1-docker.pkg.dev/${var.project_id}/gcp-poc/upload-function:latest
+    EOT
+  }
 }
 
-# ------------------------------------------------------------
-# 9️⃣  Container-based Cloud Function
-# ------------------------------------------------------------
+# ------------------------------------------
+# 2️⃣ Cloud Function (Gen 2) using the container
+# ------------------------------------------
 resource "google_cloudfunctions2_function" "container_function" {
-  name        = "container-function"
+  depends_on = [null_resource.docker_build_push]
+
+  name        = "upload-file-container"
   location    = var.region
-  description = "Cloud Function with container image"
+  description = "Cloud Function deployed from local Docker image"
 
   build_config {
-    runtime     = "python312"
-    entry_point = "handle_request"
-
+    runtime          = "python312"
+    entry_point      = "upload_file"
+    docker_repository = "projects/${var.project_id}/locations/${var.region}/repositories/gcp-poc"
     source {
       storage_source {
         bucket = google_storage_bucket.function_bucket.name
@@ -159,6 +174,7 @@ resource "google_cloudfunctions2_function" "container_function" {
     available_memory   = "512M"
     timeout_seconds    = 120
     ingress_settings   = "ALLOW_ALL"
+    all_traffic_on_latest_revision = true
 
     environment_variables = {
       BUCKET_NAME     = "gen2-uploads"
@@ -168,9 +184,9 @@ resource "google_cloudfunctions2_function" "container_function" {
   }
 }
 
-# ------------------------------------------------------------
-# 🔟  IAM for Container Function
-# ------------------------------------------------------------
+# ------------------------------------------
+# 3️⃣ IAM to allow public access
+# ------------------------------------------
 resource "google_cloud_run_service_iam_member" "container_function_invoker" {
   location = google_cloudfunctions2_function.container_function.location
   service  = google_cloudfunctions2_function.container_function.service_config[0].service
@@ -200,9 +216,3 @@ output "firestore_database" {
   description = "Firestore database ID"
   value       = google_firestore_database.default.name
 }
-
-output "artifact_registry_repo" {
-  description = "Artifact Registry Repository"
-  value       = google_artifact_registry_repository.docker_repo.name
-}
-
